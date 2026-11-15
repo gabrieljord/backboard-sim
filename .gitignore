@@ -1,2 +1,6 @@
 notes.md
 *.csv
+*.pyc
+*.png
+stl_output/
+.ipynb_checkpoints/
