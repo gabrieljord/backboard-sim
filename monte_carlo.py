@@ -6,13 +6,15 @@ import matplotlib.pyplot as plt
 class BackboardMonteCarlo:
     def __init__(
         self,
-        shooter_pos=(0.0, 4.57, 2.1),   # (x, y, z) in meters (e.g., 15 ft free throw)
+        shooter_pos=(0.0, 4.57, 2.1),   # (x, y, z) default single shooter position
+        court_bounds=((-4.5, 4.5), (1.8, 7.2)), # (x_range, y_range) in meters for court-wide shooting
         hoop_pos=(0.0, 0.38, 3.048),    # Hoop center (0.38m in front of board, 10ft high)
         board_bounds=((-0.91, 0.91), (2.90, 3.96)), # NBA board x and z bounds (meters)
         restitution=0.78,               # Effective speed retention ratio ||v_out|| / ||v_in||
         g=9.81
     ):
         self.p0 = np.array(shooter_pos, dtype=np.float64)
+        self.court_x, self.court_y = court_bounds
         self.ph = np.array(hoop_pos, dtype=np.float64)
         self.x_bounds, self.z_bounds = board_bounds
         self.e = restitution
@@ -35,6 +37,9 @@ class BackboardMonteCarlo:
     def run_monte_carlo(
         self,
         n_shots=500_000,
+        random_court=False,
+        court_x=None,
+        court_y=None,
         v0_range=None,
         theta_deg=(42, 58),
         phi_deg=(-12, 12),
@@ -42,33 +47,62 @@ class BackboardMonteCarlo:
         seed=None,
     ):
         """
-        1. Simulates N parabolic trajectories toward the backboard.
+        1. Simulates N parabolic trajectories toward the backboard (fixed shooter or random court positions).
         2. Filters shots that hit within the physical backboard boundaries.
         3. Solves the inverse parabolic kinematics & required surface normals.
         """
-        if v0_range is None:
-            if abs(self.p0[1] - 4.57) < 0.2:
-                v0_range = (7.2, 8.8)
-            else:
-                v_nom = self.estimate_v0_for_distance()
-                v0_range = (v_nom * 0.92, v_nom * 1.10)
-
         rng = np.random.default_rng(seed)
 
-        # Sample initial conditions
-        v0 = rng.uniform(*v0_range, size=n_shots)
-        theta = np.radians(rng.uniform(*theta_deg, size=n_shots))
-        phi = np.radians(rng.uniform(*phi_deg, size=n_shots))
+        if random_court:
+            cx = court_x if court_x is not None else self.court_x
+            cy = court_y if court_y is not None else self.court_y
 
-        # Optional shooter release position jitter
-        x0 = self.p0[0] + rng.normal(0, pos_jitter, size=n_shots)
-        y0 = self.p0[1] + rng.normal(0, pos_jitter, size=n_shots)
-        z0 = self.p0[2] + rng.normal(0, pos_jitter, size=n_shots)
+            x0 = rng.uniform(*cx, size=n_shots)
+            y0 = rng.uniform(*cy, size=n_shots)
+            z0 = rng.normal(2.10, pos_jitter, size=n_shots)
 
-        # Initial velocity components
-        vx0 = v0 * np.cos(theta) * np.sin(phi)
-        vy0 = -v0 * np.cos(theta) * np.cos(phi)  # Moving in -y toward y=0 board
-        vz0 = v0 * np.sin(theta)
+            xt = rng.uniform(self.x_bounds[0] * 0.75, self.x_bounds[1] * 0.75, size=n_shots)
+            zt = rng.uniform(self.z_bounds[0] + 0.15, self.z_bounds[1] - 0.15, size=n_shots)
+
+            dx = xt - x0
+            dy = -y0
+            dz = zt - z0
+            dist_h = np.sqrt(dx**2 + dy**2)
+
+            theta = np.radians(rng.uniform(45, 55, size=n_shots))
+            phi = np.arctan2(dx, -dy) + np.radians(rng.normal(0, 1.8, size=n_shots))
+
+            denom = 2.0 * (dist_h * np.tan(theta) - dz)
+            valid_d = denom > 0
+            if not np.any(valid_d):
+                return np.array([]), np.array([]), np.array([]), np.array([]), np.array([])
+
+            x0, y0, z0 = x0[valid_d], y0[valid_d], z0[valid_d]
+            dist_h, theta, phi, denom = dist_h[valid_d], theta[valid_d], phi[valid_d], denom[valid_d]
+
+            v0 = (dist_h / np.cos(theta)) * np.sqrt(self.g / denom) * rng.uniform(0.97, 1.03, size=len(denom))
+            vx0 = v0 * np.cos(theta) * np.sin(phi)
+            vy0 = -v0 * np.cos(theta) * np.cos(phi)
+            vz0 = v0 * np.sin(theta)
+        else:
+            if v0_range is None:
+                if abs(self.p0[1] - 4.57) < 0.2:
+                    v0_range = (7.2, 8.8)
+                else:
+                    v_nom = self.estimate_v0_for_distance()
+                    v0_range = (v_nom * 0.92, v_nom * 1.10)
+
+            v0 = rng.uniform(*v0_range, size=n_shots)
+            theta = np.radians(rng.uniform(*theta_deg, size=n_shots))
+            phi = np.radians(rng.uniform(*phi_deg, size=n_shots))
+
+            x0 = self.p0[0] + rng.normal(0, pos_jitter, size=n_shots)
+            y0 = self.p0[1] + rng.normal(0, pos_jitter, size=n_shots)
+            z0 = self.p0[2] + rng.normal(0, pos_jitter, size=n_shots)
+
+            vx0 = v0 * np.cos(theta) * np.sin(phi)
+            vy0 = -v0 * np.cos(theta) * np.cos(phi)
+            vz0 = v0 * np.sin(theta)
 
         # Time of flight to backboard plane y = 0
         t_hit = -y0 / vy0
@@ -136,6 +170,9 @@ class BackboardMonteCarlo:
     def generate_trajectories(
         self,
         n_shots=35,
+        random_court=False,
+        court_x=None,
+        court_y=None,
         v0_range=None,
         theta_deg=(42, 58),
         phi_deg=(-12, 12),
@@ -145,7 +182,7 @@ class BackboardMonteCarlo:
         seed=None,
     ):
         """
-        Simulates individual shot trajectory paths from the set shooter position.
+        Simulates individual shot trajectory paths (from a fixed shooter or random court positions).
         If `only_hits=True` (default), collects and returns only shots that successfully hit
         within the backboard boundaries.
         Returns a list of dicts with full 3D trajectory data:
@@ -159,7 +196,7 @@ class BackboardMonteCarlo:
           - v_out: outgoing velocity vector
           - normal: surface normal at impact
         """
-        if v0_range is None:
+        if not random_court and v0_range is None:
             if abs(self.p0[1] - 4.57) < 0.2:
                 v0_range = (7.2, 8.8)
             else:
@@ -168,18 +205,45 @@ class BackboardMonteCarlo:
 
         rng = np.random.default_rng(seed)
         trajectories = []
-        max_attempts = n_shots * 100
+        max_attempts = n_shots * 150
         attempt = 0
+
+        cx = court_x if court_x is not None else self.court_x
+        cy = court_y if court_y is not None else self.court_y
 
         while len(trajectories) < n_shots and attempt < max_attempts:
             attempt += 1
-            v0 = float(rng.uniform(*v0_range))
-            theta = float(np.radians(rng.uniform(*theta_deg)))
-            phi = float(np.radians(rng.uniform(*phi_deg)))
 
-            x0 = float(self.p0[0] + rng.normal(0, pos_jitter))
-            y0 = float(self.p0[1] + rng.normal(0, pos_jitter))
-            z0 = float(self.p0[2] + rng.normal(0, pos_jitter))
+            if random_court:
+                # Random shooter position on the court
+                x0 = float(rng.uniform(*cx))
+                y0 = float(rng.uniform(*cy))
+                z0 = float(rng.normal(2.10, pos_jitter))
+
+                # Aim at backboard target zone
+                xt = float(rng.uniform(self.x_bounds[0] * 0.75, self.x_bounds[1] * 0.75))
+                zt = float(rng.uniform(self.z_bounds[0] + 0.15, self.z_bounds[1] - 0.15))
+
+                dx = xt - x0
+                dy = -y0
+                dz = zt - z0
+                dist_h = np.sqrt(dx**2 + dy**2)
+
+                theta = float(np.radians(rng.uniform(45, 55)))
+                phi = float(np.arctan2(dx, -dy) + np.radians(rng.normal(0, 1.8)))
+
+                denom = 2.0 * (dist_h * np.tan(theta) - dz)
+                if denom <= 0:
+                    continue
+                v0 = float((dist_h / np.cos(theta)) * np.sqrt(self.g / denom) * rng.uniform(0.97, 1.03))
+            else:
+                v0 = float(rng.uniform(*v0_range))
+                theta = float(np.radians(rng.uniform(*theta_deg)))
+                phi = float(np.radians(rng.uniform(*phi_deg)))
+
+                x0 = float(self.p0[0] + rng.normal(0, pos_jitter))
+                y0 = float(self.p0[1] + rng.normal(0, pos_jitter))
+                z0 = float(self.p0[2] + rng.normal(0, pos_jitter))
 
             vx0 = v0 * np.cos(theta) * np.sin(phi)
             vy0 = -v0 * np.cos(theta) * np.cos(phi)

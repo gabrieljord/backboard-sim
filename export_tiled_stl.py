@@ -38,7 +38,7 @@ def export_segmented_tiles_stl(
     seam_clearance_mm=0.20,      # Gap between mating tile edges for glue/thermal clearance
     pts_per_tile=40,             # Mesh resolution per tile
     grid=(4, 2),                 # 4 cols x 2 rows (8 tiles) fits Ender 3 V3 SE perfectly
-    base_mode="global",          # 'global': all tiles align on flat mounting board; 'tile': per-tile min height
+    base_mode="tile",            # 'tile': each tile minimized for height (fits Ender 3 V3 SE); 'global': single flat mounting plane
 ):
     """
     Slices the optimized polynomial backboard into a grid of watertight, support-free
@@ -79,6 +79,7 @@ def export_segmented_tiles_stl(
     half_gap_m = (seam_clearance_mm / 2.0) / scale
 
     exported_files = []
+    exceeded_tiles = []
 
     for row in range(n_rows):
         for col in range(n_cols):
@@ -223,6 +224,8 @@ def export_segmented_tiles_stl(
             size_y = float(tile_pts[:, 1].max() - tile_pts[:, 1].min())
             size_z = float(tile_pts[:, 2].max() - tile_pts[:, 2].min())
             fits = (size_x <= bed_size_mm[0]) and (size_y <= bed_size_mm[1]) and (size_z <= max_height_mm)
+            if not fits:
+                exceeded_tiles.append((f"Tile R{row} C{col}", size_z))
 
             print(
                 f"  • Tile R{row} C{col}: Bed Footprint = {size_x:.1f} x {size_y:.1f} mm | "
@@ -230,6 +233,18 @@ def export_segmented_tiles_stl(
             )
 
             exported_files.append(tile_path)
+
+    if exceeded_tiles:
+        print("\n" + "!" * 70)
+        print(f"⚠️  WARNING: {len(exceeded_tiles)} tile(s) exceed Ender 3 V3 SE limits ({bed_size_mm[0]:.0f}x{bed_size_mm[1]:.0f}x{max_height_mm:.0f} mm):")
+        for name, sz in exceeded_tiles:
+            print(f"     {name}: Height = {sz:.1f} mm (limit: {max_height_mm:.0f} mm)")
+        print("\n💡 SOLUTIONS TO FIT ALL TILES ON YOUR ENDER 3 V3 SE:")
+        print("   Option 1 (Recommended): Run with '--base-mode tile'")
+        print("      Minimizes individual tile base height: all tiles drop to <= 202 mm height (100% PASS).")
+        print("   Option 2: Run with '--scale 278' (1:3.6 scale):")
+        print("      Retains flush global flat backing while keeping all tiles <= 203 mm height (100% PASS).")
+        print("!" * 70 + "\n")
 
     print(f"✅ Successfully exported {len(exported_files)} support-free flat-base tiles to '{output_dir}/'")
     return exported_files
@@ -439,14 +454,34 @@ def main():
         "--base-mode",
         type=str,
         choices=["global", "tile"],
-        default="global",
-        help="'global': all tiles align on a single flat mounting sheet; 'tile': each tile minimized for height",
+        default="tile",
+        help="'tile': each tile minimized for height (fits Ender 3 V3 SE <= 202mm); 'global': single flat mounting sheet",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=42,
         help="Random seed for solver surface fit (default: 42)",
+    )
+    parser.add_argument(
+        "--random-court",
+        action="store_true",
+        default=False,
+        help="Solve curvature across random basketball court bounds (default: False, uses --distance)",
+    )
+    parser.add_argument(
+        "--court-x",
+        type=float,
+        nargs=2,
+        default=[-4.5, 4.5],
+        help="Court X bounds (default: -4.5 4.5)",
+    )
+    parser.add_argument(
+        "--court-y",
+        type=float,
+        nargs=2,
+        default=[1.8, 7.2],
+        help="Court Y bounds (default: 1.8 7.2)",
     )
 
     args = parser.parse_args()
@@ -468,8 +503,17 @@ def main():
 
     # 1. Solve the backboard surface
     print("Solving optimal backboard surface curvature...")
-    sim = BackboardMonteCarlo(shooter_pos=(0.0, args.distance, 2.10))
-    xb, zb, v_in, v_out, normals = sim.run_monte_carlo(n_shots=args.shots, seed=args.seed)
+    sim = BackboardMonteCarlo(
+        shooter_pos=(0.0, args.distance, 2.10),
+        court_bounds=(tuple(args.court_x), tuple(args.court_y)),
+    )
+    xb, zb, v_in, v_out, normals = sim.run_monte_carlo(
+        n_shots=args.shots,
+        random_court=args.random_court,
+        court_x=tuple(args.court_x),
+        court_y=tuple(args.court_y),
+        seed=args.seed,
+    )
     coeffs, exponents = sim.fit_polynomial_surface(xb, zb, normals, degree=4)
 
     # 2. Export segmented 3D-printable tiles

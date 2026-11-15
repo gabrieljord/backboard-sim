@@ -4,3 +4,4 @@ notes.md
 *.png
 stl_output/
 .ipynb_checkpoints/
+output/
