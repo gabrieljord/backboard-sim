@@ -20,6 +20,7 @@ def run_backboard_solver(
     n_plot_trajectories=35,   # Number of individual tried trajectories to display in 3D
     poly_degree=4,            # Polynomial degree for backboard curvature fit
     random_seed=None,         # None = Dynamic random sampling on each run; int = Reproducible
+    flatten_corners=False,    # False: authentic original curved dish; True: C² smoothstep corner taper
     output_image="trajectories_3d.png",
     export_stl_dir=None,      # Directory to export STL files (None to skip)
 ):
@@ -184,7 +185,7 @@ def run_backboard_solver(
     gx = np.linspace(x_min, x_max, 45)
     gz = np.linspace(z_min, z_max, 45)
     GX, GZ = np.meshgrid(gx, gz)
-    GY, _ = sim.evaluate_surface(GX, GZ, coeffs, exponents)
+    GY, _ = sim.evaluate_surface(GX, GZ, coeffs, exponents, flatten_corners=flatten_corners)
     surf = ax.plot_surface(
         GX, GY, GZ,
         cmap="coolwarm",
@@ -343,6 +344,7 @@ def run_backboard_solver(
         f"• Bank Solvability: 100.0% of hits\n"
         f"• Polynomial Fit: Degree {poly_degree} ({len(coeffs)} terms)\n"
         f"• Restitution (e): {sim.e:.2f}\n"
+        f"• Corner Profile: {'Flattened (C² Smoothstep)' if flatten_corners else 'Raw Polynomial'}\n"
         f"• Displayed Trajectories: {len(impact_xs)} Court-Wide Hits & Solved Bounces"
     )
     fig.text(
@@ -371,8 +373,8 @@ def run_backboard_solver(
         print("\n" + "=" * 70)
         print(f"📦 EXPORTING 3D-PRINTABLE STL MESHES to '{export_stl_dir}/'...")
         tiles_dir = os.path.join(export_stl_dir, "tiles")
-        export_segmented_tiles_stl(sim, tiles_dir, coeffs, exponents)
-        export_full_backboard_stl(sim, os.path.join(export_stl_dir, "backboard_full.stl"), coeffs, exponents)
+        export_segmented_tiles_stl(sim, tiles_dir, coeffs, exponents, flatten_corners=flatten_corners)
+        export_full_backboard_stl(sim, os.path.join(export_stl_dir, "backboard_full.stl"), coeffs, exponents, flatten_corners=flatten_corners)
         print("=" * 70)
 
     return sim, coeffs, exponents, trajectories
@@ -447,6 +449,18 @@ if __name__ == "__main__":
         help="Output image path for 3D plot (default: trajectories_3d.png)",
     )
     parser.add_argument(
+        "--flatten-corners",
+        action="store_true",
+        default=False,
+        help="Smoothly taper outer 4 corners to vertical plane (default: False, keeps original full curved dish)",
+    )
+    parser.add_argument(
+        "--no-flatten-corners",
+        dest="flatten_corners",
+        action="store_false",
+        help="Keep authentic raw polynomial curved dish (default)",
+    )
+    parser.add_argument(
         "--export-stl",
         nargs="?",
         const="stl_output",
@@ -466,6 +480,7 @@ if __name__ == "__main__":
         n_plot_trajectories=args.trajectories,
         poly_degree=args.poly_degree,
         random_seed=args.seed,
+        flatten_corners=args.flatten_corners,
         output_image=args.output,
         export_stl_dir=args.export_stl,
     )

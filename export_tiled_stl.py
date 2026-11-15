@@ -38,7 +38,8 @@ def export_segmented_tiles_stl(
     seam_clearance_mm=0.20,      # Gap between mating tile edges for glue/thermal clearance
     pts_per_tile=40,             # Mesh resolution per tile
     grid=(4, 2),                 # 4 cols x 2 rows (8 tiles) fits Ender 3 V3 SE perfectly
-    base_mode="tile",            # 'tile': each tile minimized for height (fits Ender 3 V3 SE); 'global': single flat mounting plane
+    base_mode="tile",            # 'tile': each tile minimized for height (fits Ender 3 V3 SE <= 202mm); 'global': single flat mounting plane
+    flatten_corners=False,       # False: authentic original curved dish; True: C² smoothstep corner taper
 ):
     """
     Slices the optimized polynomial backboard into a grid of watertight, support-free
@@ -59,7 +60,7 @@ def export_segmented_tiles_stl(
         xs_eval = np.linspace(x_min, x_max, 80)
         zs_eval = np.linspace(z_min, z_max, 80)
         X_ev, Z_ev = np.meshgrid(xs_eval, zs_eval, indexing="ij")
-        res_ev = self.evaluate_surface(X_ev, Z_ev, coeffs, exponents)
+        res_ev = self.evaluate_surface(X_ev, Z_ev, coeffs, exponents, flatten_corners=flatten_corners)
         Y_ev = res_ev[0]
         normals_ev = res_ev[1] if len(res_ev) == 2 else (-res_ev[1]/np.sqrt(res_ev[1]**2+1+res_ev[2]**2), 1.0/np.sqrt(res_ev[1]**2+1+res_ev[2]**2), -res_ev[2]/np.sqrt(res_ev[1]**2+1+res_ev[2]**2))
         Yf_ev = (Y_ev - ball_radius_m * normals_ev[1]) * scale
@@ -71,7 +72,8 @@ def export_segmented_tiles_stl(
         f"Backboard Dimensions : {total_width_mm:.1f} mm (W) x {total_height_mm:.1f} mm (H)\n"
         f"Printer Bed Footprint: {bed_size_mm[0]:.0f} mm (X) x {bed_size_mm[1]:.0f} mm (Y) [Max Z: {max_height_mm:.0f} mm]\n"
         f"Tile Layout          : {n_cols} cols x {n_rows} rows = {n_cols * n_rows} tiles\n"
-        f"Base Mode            : {base_mode.upper()} (Flat bottom on bed at Z = 0, Zero supports required)"
+        f"Base Mode            : {base_mode.upper()} (Flat bottom on bed at Z = 0, Zero supports required)\n"
+        f"Corner Flattening    : {'ENABLED (C² smoothstep taper, flat outer corners)' if flatten_corners else 'DISABLED (raw polynomial)'}"
     )
 
     x_edges = np.linspace(x_min, x_max, n_cols + 1)
@@ -94,7 +96,7 @@ def export_segmented_tiles_stl(
             X, Z = np.meshgrid(xs, zs, indexing="ij")
 
             # Evaluate ball-center surface and unit normals
-            res = self.evaluate_surface(X, Z, coeffs, exponents)
+            res = self.evaluate_surface(X, Z, coeffs, exponents, flatten_corners=flatten_corners)
             if len(res) == 2:
                 Y, (nx, ny, nz) = res
             else:
@@ -260,6 +262,7 @@ def export_full_backboard_stl(
     ball_radius_m=0.07,
     pts_x=120,
     pts_z=80,
+    flatten_corners=False,
 ):
     """
     Exports the entire watertight curved backboard as a single flat-base monolithic STL mesh.
@@ -273,7 +276,7 @@ def export_full_backboard_stl(
     zs = np.linspace(z_min, z_max, pts_z)
     X, Z = np.meshgrid(xs, zs, indexing="ij")
 
-    res = self.evaluate_surface(X, Z, coeffs, exponents)
+    res = self.evaluate_surface(X, Z, coeffs, exponents, flatten_corners=flatten_corners)
     if len(res) == 2:
         Y, (nx, ny, nz) = res
     else:
@@ -455,7 +458,19 @@ def main():
         type=str,
         choices=["global", "tile"],
         default="tile",
-        help="'tile': each tile minimized for height (fits Ender 3 V3 SE <= 202mm); 'global': single flat mounting sheet",
+        help="'tile': each tile minimized for height (fits Ender 3 V3 SE <= 202mm); 'global': single flat mounting plane",
+    )
+    parser.add_argument(
+        "--flatten-corners",
+        action="store_true",
+        default=False,
+        help="Smoothly taper outer 4 corners to vertical plane (default: False, keeps original full curved dish)",
+    )
+    parser.add_argument(
+        "--no-flatten-corners",
+        dest="flatten_corners",
+        action="store_false",
+        help="Keep authentic raw polynomial curved dish (default)",
     )
     parser.add_argument(
         "--seed",
@@ -532,6 +547,7 @@ def main():
         pts_per_tile=args.pts_per_tile,
         grid=tuple(args.grid),
         base_mode=args.base_mode,
+        flatten_corners=args.flatten_corners,
     )
 
     # 3. Export complete monolithic backboard STL
@@ -547,6 +563,7 @@ def main():
         ball_radius_m=args.ball_radius,
         pts_x=120,
         pts_z=80,
+        flatten_corners=args.flatten_corners,
     )
 
     print("=" * 70)

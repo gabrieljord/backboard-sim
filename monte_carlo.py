@@ -402,23 +402,75 @@ class BackboardMonteCarlo:
         return coeffs, exponents
 
     @staticmethod
-    def evaluate_surface(X, Z, coeffs, exponents, z_ref=3.048):
-        """Evaluates surface depth Y = f(X, Z) and its unit normals on a grid."""
-        Zs = Z - z_ref
-        Y = np.zeros_like(X, dtype=np.float64)
-        dY_dx = np.zeros_like(X, dtype=np.float64)
-        dY_dz = np.zeros_like(X, dtype=np.float64)
+    def evaluate_surface(
+        X,
+        Z,
+        coeffs,
+        exponents,
+        z_ref=3.048,
+        flatten_corners=False,
+        r_inner=0.55,
+        r_outer=0.95,
+        target_center_z=3.43,
+        half_width=0.9144,
+        half_height=0.5334,
+    ):
+        """
+        Evaluates surface depth Y = f(X, Z) and its unit normals on points or grids.
+        If `flatten_corners=True` (default), smoothly transitions the outer perimeter
+        and 4 corners into a flat vertical reference plane (Y = 0, normal = [0, 1, 0])
+        using an exact C^2 quintic smoothstep super-elliptic taper, leaving the central
+        scoring sweet spot 100% mathematically unperturbed.
+        """
+        X_arr = np.asarray(X, dtype=np.float64)
+        Z_arr = np.asarray(Z, dtype=np.float64)
+        Zs = Z_arr - z_ref
+        Y = np.zeros_like(X_arr, dtype=np.float64)
+        dY_dx = np.zeros_like(X_arr, dtype=np.float64)
+        dY_dz = np.zeros_like(X_arr, dtype=np.float64)
 
         for c, (i, j) in zip(coeffs, exponents):
-            Y += c * (X ** i) * (Zs ** j)
+            Y += c * (X_arr ** i) * (Zs ** j)
             if i > 0:
-                dY_dx += c * i * (X ** (i - 1)) * (Zs ** j)
+                dY_dx += c * i * (X_arr ** (i - 1)) * (Zs ** j)
             if j > 0:
-                dY_dz += c * j * (X ** i) * (Zs ** (j - 1))
+                dY_dz += c * j * (X_arr ** i) * (Zs ** (j - 1))
 
-        # Normal vector [-df/dx, 1, -df/dz] normalized
+        if flatten_corners:
+            # Super-elliptic radius (p=4) relative to target sweet-spot center
+            x_n = X_arr / half_width
+            z_n = (Z_arr - target_center_z) / half_height
+            p = 4
+            r = (x_n**p + z_n**p)**(1.0 / p)
+
+            # Quintic C^2 smoothstep parameter: t in [0, 1]
+            t = np.clip((r - r_inner) / (r_outer - r_inner), 0.0, 1.0)
+            # w(t) = 6t^5 - 15t^4 + 10t^3
+            w = 6.0 * (t**5) - 15.0 * (t**4) + 10.0 * (t**3)
+            # dw/dt = 30t^4 - 60t^3 + 30t^2
+            dw_dt = 30.0 * (t**4) - 60.0 * (t**3) + 30.0 * (t**2)
+
+            eps = 1e-12
+            dr_dx = (x_n**(p - 1)) / (half_width * (r**(p - 1) + eps))
+            dr_dz = (z_n**(p - 1)) / (half_height * (r**(p - 1) + eps))
+
+            in_transition = (r >= r_inner) & (r <= r_outer)
+            dt_dx = np.where(in_transition, dr_dx / (r_outer - r_inner), 0.0)
+            dt_dz = np.where(in_transition, dr_dz / (r_outer - r_inner), 0.0)
+
+            dw_dx = dw_dt * dt_dx
+            dw_dz = dw_dt * dt_dz
+
+            # Exact analytical derivatives by product rule:
+            dY_dx = (1.0 - w) * dY_dx - dw_dx * Y
+            dY_dz = (1.0 - w) * dY_dz - dw_dz * Y
+            Y = (1.0 - w) * Y
+
+        # Unit normal vector [-df/dx, 1, -df/dz] normalized
         norm = np.sqrt(dY_dx**2 + 1.0 + dY_dz**2)
-        nx, ny, nz = -dY_dx / norm, 1.0 / norm, -dY_dz / norm
+        nx = -dY_dx / norm
+        ny = 1.0 / norm
+        nz = -dY_dz / norm
         return Y, (nx, ny, nz)
 
 
